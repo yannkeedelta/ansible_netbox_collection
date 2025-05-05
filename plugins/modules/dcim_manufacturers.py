@@ -155,14 +155,18 @@ def main():
         elif state == "absent":
             result = handler.ensure_absent()
         else:
+            result = None
             module.fail_json(msg="Invalid state: {}".format(state))
+
+
+        if result.get("failed", False):
+            module.fail_json(**result)
 
         results.append(result)
         if result.get("changed", False):
             changed = True
 
     module.exit_json(changed=changed, results=results)
-
 
 if __name__ == "__main__":
     main()

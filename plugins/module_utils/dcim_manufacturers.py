@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+from pynetbox.core.query import RequestError
+
 class DcimManufacturers:
     """
     NetBox DCIM Manufacturer handler for create, update, and delete operations.
@@ -20,7 +22,7 @@ class DcimManufacturers:
         self.check_mode = check_mode
         self.payload = self.build_payload(stage=self.state)
         self.manufacturer = None
-        self.perform_lookup()
+        self.perform_lookup(stage=self.state)
 
     def build_payload(self, stage="merged"):
         """
@@ -68,30 +70,42 @@ class DcimManufacturers:
             resolved.append(tag_obj.id)
         return resolved
 
-    def perform_lookup(self):
+    def perform_lookup(self, stage="merged"):
         """
-        Try to locate an existing manufacturer using lookup keys, then fallback.
+        Try to locate an existing manufacturer using lookup keys, then fallback depending on the stage.
+
+        Args:
+            stage (str): The current stage ("merged" or "override").
         """
         lookup = self.data.get("lookup", {})
+
+        # En stage 'merged', si aucun lookup explicite n’est fourni, on n’essaie pas de retrouver un manufacturer
+        if stage == "merged" and not lookup:
+            self.manufacturer = None
+            return
+
+        # Recherche directe dans les champs gérés
         search_fields = {k: lookup[k] for k in lookup if k in self.MANAGED_FIELDS}
 
-        if not search_fields:
+        # En override, fallback sur les données YAML si nécessaire
+        if not search_fields and stage == "override":
             search_fields = {k: self.data[k] for k in self.MANAGED_FIELDS if k in self.data}
 
+        # Si aucun champ exploitable : abandon
+        if not search_fields:
+            self.manufacturer = None
+            return
+
+
+        # Tentative de récupération priorisée
         if "slug" in search_fields:
             self.manufacturer = self.api.dcim.manufacturers.get(slug=search_fields["slug"])
         elif "name" in search_fields:
-            results = self.api.dcim.manufacturers.filter(name=search_fields["name"])
+            results = list(self.api.dcim.manufacturers.filter(name=search_fields["name"]))
             if len(results) == 1:
                 self.manufacturer = results[0]
             elif len(results) > 1:
                 raise Exception("Multiple manufacturers found with name '{}'.".format(search_fields["name"]))
-        elif search_fields:
-            results = self.api.dcim.manufacturers.filter(**search_fields)
-            if len(results) == 1:
-                self.manufacturer = results[0]
-            elif len(results) > 1:
-                raise Exception("Multiple manufacturers found with filters: {}".format(search_fields))
 
     def is_different(self, stage="merged"):
         """
@@ -146,15 +160,28 @@ class DcimManufacturers:
         Ensure the manufacturer is present and updated if needed.
         :return: dict with operation result
         """
+
         if not self.manufacturer:
+
             if self.check_mode:
-                return {"changed": True, "msg": "Manufacturer '{}' would be created.".format(self.payload["name"])}
-            created = self.api.dcim.manufacturers.create(self.payload)
-            return {
-                "changed": True,
-                "msg": "Manufacturer '{}' has been created.".format(created.name),
-                "manufacturer": created.serialize(),
-            }
+                return {
+                    "changed": True,
+                    "msg": "Manufacturer '{}' would be created.".format(self.payload["name"])
+                }
+            try:
+                created = self.api.dcim.manufacturers.create(self.payload)
+                return {
+                    "changed": True,
+                    "msg": "Manufacturer '{}' has been created.".format(created.name),
+                    "manufacturer": created.serialize(),
+                }
+            except RequestError as e:
+                return {
+                    "failed": True,
+                    "msg": "Failed to create manufacturer '{}': {}".format(self.payload.get("name", "unknown"), str(e)),
+                    "details": getattr(e, "error", str(e)),
+                }
+
 
         updates = self.is_different(self.state)
         if updates:

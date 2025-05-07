@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 
 from pynetbox.core.query import RequestError
+import re
+import unicodedata
 
-class DcimManufacturers:
+class DcimManufacturers(Netbox):
     """
     NetBox DCIM Manufacturer handler for create, update, and delete operations.
     """
 
     MANAGED_FIELDS = ["name", "slug", "description", "tags"]
 
-    def __init__(self, api, data, state, check_mode=False):
+    def __init__(self, api, data, check_mode=False):
         """
         Initialize the handler.
         :param api: pynetbox API instance
@@ -18,11 +20,43 @@ class DcimManufacturers:
         """
         self.api = api
         self.data = data
-        self.state = state
         self.check_mode = check_mode
-        self.payload = self.build_payload(stage=self.state)
+
+        self.set_name()
+        self.set_slug()
+        self.set_description()
+        self.set_tags()
+        self.set_id()
+
+        #self.payload = self.build_payload(stage=self.state)
         self.manufacturer = None
-        self.perform_lookup(stage=self.state)
+        #self.perform_lookup(stage=self.state)
+
+    def set_name(self):
+        self.payload['name'] = str(self.data["name"])
+
+    def set_slug(self, from_name=False):
+        if "slug" in self.data:
+            self.payload['slug'] = str(self.slugify(self.data["slug"]))
+        elif from_name:
+            self.payload['slug'] = str(self.slugify(self.data["name"]))
+
+    def set_description(self):
+        if "description" in self.data:
+            self.payload['description'] = str(self.data["description"])
+
+    def set_tags(self):
+        if "tags" in self.data:
+            self.payload["tags"] = sorted(self._resolve_tags(self.data["tags"]))
+
+    def set_id(self):
+        if "id" in self.data:
+            self.payload["id"] = int(self.data["id"])
+
+    @property
+    def get_payload(self):
+        return self.payload
+
 
     def build_payload(self, stage="merged"):
         """
@@ -36,8 +70,10 @@ class DcimManufacturers:
         """
         payload = {
             "name": self.data["name"],
-            "slug": self.data.get("slug") or self.data["name"].lower().replace(" ", "-"),
         }
+
+        if "slug" in self.data:
+            payload["slug"] = self.slugify(self.data["slug"])
 
         if stage == "override":
             payload["description"] = self.data.get("description", "")
@@ -72,40 +108,70 @@ class DcimManufacturers:
 
     def perform_lookup(self, stage="merged"):
         """
-        Try to locate an existing manufacturer using lookup keys, then fallback depending on the stage.
+        Try to locate an existing manufacturer using available lookup keys.
 
         Args:
             stage (str): The current stage ("merged" or "override").
         """
+        # On commence par les champs définis explicitement dans `lookup`, s'ils existent
         lookup = self.data.get("lookup", {})
 
-        # En stage 'merged', si aucun lookup explicite n’est fourni, on n’essaie pas de retrouver un manufacturer
-        if stage == "merged" and not lookup:
-            self.manufacturer = None
-            return
-
-        # Recherche directe dans les champs gérés
         search_fields = {k: lookup[k] for k in lookup if k in self.MANAGED_FIELDS}
 
-        # En override, fallback sur les données YAML si nécessaire
-        if not search_fields and stage == "override":
-            search_fields = {k: self.data[k] for k in self.MANAGED_FIELDS if k in self.data}
+        # Si aucun champ n'est défini dans `lookup`, on regarde dans `data` (priorité : slug > name)
+        if not search_fields:
+            if "slug" in self.data:
+                search_fields["slug"] = self.data["slug"]
+            elif "name" in self.data:
+                search_fields["name"] = self.data["name"]
 
-        # Si aucun champ exploitable : abandon
+        # Si toujours rien, on abandonne
         if not search_fields:
             self.manufacturer = None
             return
 
+        try:
+            if "slug" in search_fields:
+                self.manufacturer = self.api.dcim.manufacturers.get(slug=search_fields["slug"])
+            elif "name" in search_fields:
+                results = list(self.api.dcim.manufacturers.filter(name=search_fields["name"]))
+                if len(results) == 1:
+                    self.manufacturer = results[0]
+                elif len(results) > 1:
+                    raise Exception("Multiple manufacturers found with name '{}'.".format(search_fields["name"]))
+        except Exception as e:
+            raise Exception("Lookup failed: {}".format(str(e)))
 
-        # Tentative de récupération priorisée
-        if "slug" in search_fields:
-            self.manufacturer = self.api.dcim.manufacturers.get(slug=search_fields["slug"])
-        elif "name" in search_fields:
-            results = list(self.api.dcim.manufacturers.filter(name=search_fields["name"]))
-            if len(results) == 1:
-                self.manufacturer = results[0]
-            elif len(results) > 1:
-                raise Exception("Multiple manufacturers found with name '{}'.".format(search_fields["name"]))
+    @staticmethod
+    def slugify(value: str) -> str:
+        """
+        Simplified slugify function to convert a string into a slug.
+        """
+        value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+        value = re.sub(r"[^\w\s-]", "", value).strip().lower()
+        return re.sub(r"[-\s]+", "-", value)
+
+    def gather_element(self):
+        try:
+            self.manufacturer = self.api.dcim.manufacturers.get(self.get_payload)
+
+            if not self.manufacturer:
+                return {
+                    "failed": True,
+                    "msg": "No existing manufacturer matches lookup: {}. Aborting creation.".format(self.get_payload)
+                }
+
+            return {
+                "changed": False,
+                "msg": "Manufacturer '{}' has gather.".format(self.manufacturer.name),
+                "manufacturer": self.manufacturer.serialize(),
+            }
+        except RequestError as e:
+            return {
+                "failed": True,
+                "msg": "Failed to gather manufacturer '{}': {}".format(self.get_payload, str(e)),
+                "details": getattr(e, "error", str(e)),
+            }
 
     def is_different(self, stage="merged"):
         """
@@ -130,7 +196,7 @@ class DcimManufacturers:
         # Construction de l'état désiré du manufacturer
         desired = {
             "name": self.payload["name"],
-            "slug": self.payload["slug"],
+            "slug": self.payload.get("slug", self.manufacturer.slug if self.manufacturer else ""),
             "description": self.payload.get("description", ""),
             "tags": sorted(self.payload.get("tags", [])),
         }
@@ -161,7 +227,18 @@ class DcimManufacturers:
         :return: dict with operation result
         """
 
+        # Cas : lookup explicite mais aucun résultat
+        if self.manufacturer is None and "lookup" in self.data:
+            lookup = self.data["lookup"]
+            if any(k in lookup for k in ["slug", "name"]):
+                return {
+                    "failed": True,
+                    "msg": "No existing manufacturer matches lookup: {}. Aborting creation.".format(lookup)
+                }
+
         if not self.manufacturer:
+            if "slug" not in self.payload:
+                self.payload["slug"] = self.slugify(self.payload["name"])
 
             if self.check_mode:
                 return {

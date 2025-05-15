@@ -5,7 +5,7 @@
 from ansible.module_utils.basic import AnsibleModule
 import pynetbox
 import os
-from ansible_collections.yannkeedelta.netbox.plugins.module_utils.dcim_manufacturers import DcimManufacturers
+from ansible_collections.yannkeedelta.netbox.plugins.module_utils.DcimManufacturers import DcimManufacturers
 
 
 def main():
@@ -16,13 +16,16 @@ def main():
             type='list',
             required=True,
             elements='dict',
-            options=dict(
+            manufacturers=dict(
                 name=dict(type='str', required=True),
                 slug=dict(type='str', required=False),
                 description=dict(type='str', required=False),
                 tags=dict(type='list', elements='str', required=False),
                 id=dict(type='int', required=False),
             ),
+            lookup=dict(
+                name=dict(type='str', required=True)
+            )
         ),
         state=dict(type='str', required=False, default='merged', choices=['merged', 'overridden', 'deleted', 'gathered']),
     )
@@ -50,7 +53,7 @@ def main():
     changed = False
 
     for manufacturer in manufacturers:
-        dcim_manufacturer = DcimManufacturers(api=nb_api, data=manufacturer, check_mode=module.check_mode)
+        dcim_manufacturer = DcimManufacturers(api=nb_api, state=state, data=manufacturer, check_mode=module.check_mode)
 
         if state == "gathered":
             result = dcim_manufacturer.gather_element()

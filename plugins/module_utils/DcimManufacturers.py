@@ -4,14 +4,14 @@ from pynetbox.core.query import RequestError
 import re
 import unicodedata
 
-class DcimManufacturers(Netbox):
+class DcimManufacturers():
     """
     NetBox DCIM Manufacturer handler for create, update, and delete operations.
     """
 
     MANAGED_FIELDS = ["name", "slug", "description", "tags"]
 
-    def __init__(self, api, data, check_mode=False):
+    def __init__(self, api, state, data, check_mode=False):
         """
         Initialize the handler.
         :param api: pynetbox API instance
@@ -20,26 +20,46 @@ class DcimManufacturers(Netbox):
         """
         self.api = api
         self.data = data
+        self.state = state
         self.check_mode = check_mode
+        self.payload = dict()
 
         self.set_name()
         self.set_slug()
-        self.set_description()
-        self.set_tags()
-        self.set_id()
+        #self.set_description()
+        #self.set_tags()
+        #self.set_id()
 
         #self.payload = self.build_payload(stage=self.state)
         self.manufacturer = None
         #self.perform_lookup(stage=self.state)
 
     def set_name(self):
-        self.payload['name'] = str(self.data["name"])
+
+        lookup = self.data.get('lookup') or {}
+        name = lookup.get('name')
+
+        if name and self.state == 'gathered':
+            self.payload['name'] = [str(name)]
 
     def set_slug(self, from_name=False):
-        if "slug" in self.data:
-            self.payload['slug'] = str(self.slugify(self.data["slug"]))
-        elif from_name:
-            self.payload['slug'] = str(self.slugify(self.data["name"]))
+
+        lookup = self.data.get('lookup') or {}
+        slug = lookup.get('slug')
+
+        if slug and self.state == 'gathered':
+            self.payload['slug'] = [str(slug)]
+
+        elif from_name and 'name' in self.payload:
+
+            self.payload['slug'] = self.slugify(self.payload['name'])
+
+
+
+        #if "slug" in self.data:
+        #    self.payload['slug'] = str(self.slugify(self.data["slug"]))
+        #elif from_name:
+        #    self.payload['slug'] = str(self.slugify(self.data["name"]))
 
     def set_description(self):
         if "description" in self.data:
@@ -69,7 +89,7 @@ class DcimManufacturers(Netbox):
             dict: Payload containing manufacturer attributes.
         """
         payload = {
-            "name": self.data["name"],
+            "name": self. data["name"],
         }
 
         if "slug" in self.data:
@@ -153,17 +173,18 @@ class DcimManufacturers(Netbox):
 
     def gather_element(self):
         try:
-            self.manufacturer = self.api.dcim.manufacturers.get(self.get_payload)
+
+            self.manufacturer = self.api.dcim.manufacturers.get(**self.get_payload)
 
             if not self.manufacturer:
                 return {
                     "failed": True,
-                    "msg": "No existing manufacturer matches lookup: {}. Aborting creation.".format(self.get_payload)
+                    "msg": "No existing manufacturer matches lookup: {}.".format(self.get_payload)
                 }
 
             return {
                 "changed": False,
-                "msg": "Manufacturer '{}' has gather.".format(self.manufacturer.name),
+                "msg": "Manufacturer '{}' has been gathered.".format(self.manufacturer.name),
                 "manufacturer": self.manufacturer.serialize(),
             }
         except RequestError as e:
